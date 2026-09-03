@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.py[cod]
+.venv/
+myraha.db
+myraha.db-shm
+myraha.db-wal
