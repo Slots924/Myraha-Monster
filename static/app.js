@@ -4,6 +4,8 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const app = {
   state: null,
   comments: [],
+  whitelist: [],
+  draggedPageId: null,
   filters: { page_id: "", status: "all", search: "" },
   poller: null,
 };
@@ -64,13 +66,22 @@ function renderState() {
   $("#autoHideState").textContent = state.auto_hide ? "Увімкнено" : "Вимкнено";
   $("#autoHideState").style.color = state.auto_hide ? "var(--lime)" : "";
   $("#skipOwnToggle").checked = state.skip_page_comments;
+  $("#whitelistToggle").checked = state.whitelist_enabled;
+  $("#whitelistState").textContent = state.whitelist_enabled ? "Увімкнено" : "Вимкнено";
+  $("#whitelistState").style.color = state.whitelist_enabled ? "var(--lime)" : "";
+  $("#whitelistCount").textContent = state.whitelist_count;
   $("#connectedStat").textContent = state.pages.filter(page => page.subscribed).length;
   $("#hiddenStat").textContent = formatNumber(state.stats.hidden);
   $("#todayStat").textContent = formatNumber(state.stats.today);
   $("#errorsStat").textContent = formatNumber(state.stats.errors);
   $("#pagesCount").textContent = state.pages.length;
-  renderPages();
+  if (!$(".page-note:focus") && !app.draggedPageId) renderPages();
   renderPageFilter();
+}
+
+function facebookPageUrl(page) {
+  const candidate = String(page.page_url || "");
+  return /^https?:\/\//i.test(candidate) ? candidate : `https://www.facebook.com/${encodeURIComponent(page.id)}`;
 }
 
 function renderPages() {
@@ -79,26 +90,50 @@ function renderPages() {
     grid.innerHTML = `<div class="empty-pages"><span>◉</span><h3>Фанпейджів ще немає</h3><p>Натисни «Синхронізувати з Meta», щоб підтягнути доступні сторінки.</p></div>`;
     return;
   }
-  grid.innerHTML = app.state.pages.map(page => `
-    <article class="page-card ${page.subscribed ? "on" : ""}">
+  grid.innerHTML = app.state.pages.map(page => {
+    const pageUrl = facebookPageUrl(page);
+    return `
+    <article class="page-card ${page.subscribed ? "on" : ""}" data-page-id="${escapeHtml(page.id)}">
+      <button class="drag-handle" draggable="true" title="Перетягнути сторінку" aria-label="Перетягнути сторінку">⠿</button>
       <div class="page-top">
         ${page.picture_url
           ? `<img class="page-avatar" src="${escapeHtml(page.picture_url)}" alt="">`
           : `<span class="page-avatar">${escapeHtml(initials(page.name))}</span>`}
-        <div class="page-info"><b>${escapeHtml(page.name)}</b><small>${escapeHtml(page.category || `ID ${page.id}`)}</small></div>
+        <div class="page-info"><b>${escapeHtml(page.name)}</b><small>${escapeHtml(page.category || "Facebook Page")}</small></div>
+      </div>
+      <div class="page-note-wrap">
+        <input class="page-note" maxlength="160" value="${escapeHtml(page.note || "")}" data-original="${escapeHtml(page.note || "")}" placeholder="Мітка, ім’я, країна або коротка примітка...">
+        <button class="note-save" title="Зберегти примітку">✓</button>
+      </div>
+      <div class="page-identifiers">
+        <div class="id-line"><code>ID ${escapeHtml(page.id)}</code><button class="tiny-action copy-page-id" title="Копіювати ID">▣</button></div>
+        <div class="link-line"><a href="${escapeHtml(pageUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(pageUrl)}</a><button class="tiny-action copy-page-link" title="Копіювати посилання">▣</button><a class="tiny-action" href="${escapeHtml(pageUrl)}" target="_blank" rel="noopener noreferrer" title="Відкрити фанпейдж">↗</a></div>
+      </div>
+      <div class="page-meta">
+        <span><b>${formatNumber(page.followers_count)}</b> читачів</span>
+        <span><b>${formatNumber(page.comment_count)}</b> коментарів</span>
+      </div>
+      <div class="page-control">
+        <div class="page-control-copy"><b>● ${page.subscribed ? "WEBHOOK ON" : "OFFLINE"}</b><small>${page.subscribed ? "події надходять" : "не підключено"}</small></div>
         <label class="switch" title="${page.subscribed ? "Відключити webhook" : "Підключити webhook"}">
           <input class="page-toggle" type="checkbox" data-page-id="${escapeHtml(page.id)}" ${page.subscribed ? "checked" : ""}>
           <span class="slider"><i></i></span>
         </label>
       </div>
-      <div class="page-meta">
-        <span><b>${formatNumber(page.followers_count)}</b> читачів</span>
-        <span><b>${formatNumber(page.comment_count)}</b> коментарів</span>
-        <span class="page-status">● ${page.subscribed ? "WEBHOOK ON" : "OFFLINE"}</span>
-      </div>
       ${page.last_error ? `<p class="page-error">${escapeHtml(page.last_error)}</p>` : ""}
-    </article>`).join("");
+    </article>`;
+  }).join("");
   $$(".page-toggle", grid).forEach(toggle => toggle.addEventListener("change", changePageSubscription));
+  $$(".note-save", grid).forEach(button => button.addEventListener("click", savePageNote));
+  $$(".page-note", grid).forEach(input => input.addEventListener("keydown", event => {
+    if (event.key === "Enter") { event.preventDefault(); input.closest(".page-card").querySelector(".note-save").click(); }
+  }));
+  $$(".copy-page-id", grid).forEach(button => button.addEventListener("click", () => copyText(button.closest(".page-card").dataset.pageId, "ID скопійовано")));
+  $$(".copy-page-link", grid).forEach(button => button.addEventListener("click", () => {
+    const page = app.state.pages.find(item => item.id === button.closest(".page-card").dataset.pageId);
+    copyText(facebookPageUrl(page), "Посилання скопійовано");
+  }));
+  bindPageDragging(grid);
 }
 
 function renderPageFilter() {
@@ -109,8 +144,116 @@ function renderPageFilter() {
   select.value = selected;
 }
 
+async function copyText(value, successMessage) {
+  try {
+    await navigator.clipboard.writeText(value);
+    toast(successMessage);
+  } catch (error) {
+    toast("Не вдалося скопіювати", "Скопіюй значення вручну.", "error");
+  }
+}
+
+async function savePageNote(event) {
+  const card = event.currentTarget.closest(".page-card");
+  const input = card.querySelector(".page-note");
+  event.currentTarget.disabled = true;
+  try {
+    const result = await api(`/api/pages/${encodeURIComponent(card.dataset.pageId)}/details`, {
+      method: "POST", body: JSON.stringify({ note: input.value }),
+    });
+    app.state = result.state;
+    input.dataset.original = input.value.trim();
+    toast("Примітку збережено", "Вона залишиться після перезапуску.");
+  } catch (error) {
+    toast("Не вдалося зберегти примітку", error.message, "error");
+  } finally { event.currentTarget.disabled = false; }
+}
+
+function bindPageDragging(grid) {
+  $$(".drag-handle", grid).forEach(handle => {
+    handle.addEventListener("dragstart", event => {
+      const card = handle.closest(".page-card");
+      app.draggedPageId = card.dataset.pageId;
+      card.classList.add("dragging");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", app.draggedPageId);
+    });
+    handle.addEventListener("dragend", () => {
+      $$(".page-card", grid).forEach(card => card.classList.remove("dragging", "drag-over"));
+      app.draggedPageId = null;
+    });
+  });
+  grid.addEventListener("dragover", event => {
+    event.preventDefault();
+    const dragged = grid.querySelector(`[data-page-id="${CSS.escape(app.draggedPageId || "")}"]`);
+    const target = event.target.closest(".page-card");
+    if (!dragged || !target || target === dragged) return;
+    $$(".page-card", grid).forEach(card => card.classList.remove("drag-over"));
+    target.classList.add("drag-over");
+    const box = target.getBoundingClientRect();
+    target.parentNode.insertBefore(dragged, event.clientY < box.top + box.height / 2 ? target : target.nextSibling);
+  });
+  grid.addEventListener("drop", async event => {
+    event.preventDefault();
+    const pageIds = $$(".page-card", grid).map(card => card.dataset.pageId);
+    $$(".page-card", grid).forEach(card => card.classList.remove("dragging", "drag-over"));
+    app.draggedPageId = null;
+    try {
+      const result = await api("/api/pages/reorder", { method: "POST", body: JSON.stringify({ page_ids: pageIds }) });
+      app.state = result.state;
+      toast("Порядок збережено");
+    } catch (error) {
+      toast("Не вдалося зберегти порядок", error.message, "error");
+      await loadState({ silent: true });
+    }
+  });
+}
+
+function parseWhitelist(textValue) {
+  return [...new Set(String(textValue).split(/[\s,;]+/).map(value => value.trim()).filter(Boolean))];
+}
+
+function updateWhitelistHint() {
+  const ids = parseWhitelist($("#whitelistInput").value);
+  $("#whitelistHint").textContent = `${ids.length} унікальних ID`;
+}
+
+async function loadWhitelist({ silent = false } = {}) {
+  try {
+    const result = await api("/api/whitelist");
+    app.whitelist = result.user_ids;
+    $("#whitelistInput").value = app.whitelist.join("\n");
+    updateWhitelistHint();
+  } catch (error) {
+    if (!silent) toast("Білий список недоступний", error.message, "error");
+  }
+}
+
+async function saveWhitelist() {
+  const userIds = parseWhitelist($("#whitelistInput").value);
+  loading(true, "Зберігаємо білий список...");
+  try {
+    const result = await api("/api/whitelist", { method: "POST", body: JSON.stringify({ user_ids: userIds }) });
+    app.whitelist = result.user_ids;
+    app.state = result.state;
+    $("#whitelistInput").value = app.whitelist.join("\n");
+    renderState();
+    updateWhitelistHint();
+    toast("Білий список збережено", `ID у списку: ${app.whitelist.length}`);
+  } catch (error) {
+    toast("Не вдалося зберегти список", error.message, "error");
+  } finally { loading(false); }
+}
+
+function changePageTab(tab) {
+  $$(".page-tab").forEach(button => button.classList.toggle("active", button.dataset.pageTab === tab));
+  $$(".page-subview").forEach(view => view.classList.remove("active"));
+  $(`#${tab}SubView`).classList.add("active");
+}
+
 function statusPresentation(comment) {
   if (comment.status === "error") return ["Помилка", "error"];
+  if (comment.status === "whitelisted") return ["Білий список", "whitelist"];
   if (comment.status === "skipped") return ["Своя відповідь", "skipped"];
   if (["queued", "hiding"].includes(comment.status)) return ["Обробляється", "hidden"];
   if (comment.is_hidden) return ["Приховано", "hidden"];
@@ -198,7 +341,12 @@ async function saveSetting(key, value) {
     const result = await api("/api/settings", { method: "POST", body: JSON.stringify({ [key]: value }) });
     app.state = result.state;
     renderState();
-    toast(value ? "Monster mode активовано" : "Налаштування оновлено", key === "auto_hide" ? (value ? "Нові коментарі будуть приховуватись автоматично." : "Нові коментарі залишатимуться видимими.") : "Правило для відповідей сторінки збережено.");
+    const messages = {
+      auto_hide: value ? "Нові коментарі будуть приховуватись автоматично." : "Нові коментарі залишатимуться видимими.",
+      skip_page_comments: "Правило для відповідей сторінки збережено.",
+      whitelist_enabled: value ? "Коментарі користувачів зі списку не приховуватимуться." : "Білий список тимчасово вимкнено.",
+    };
+    toast(value ? "Налаштування увімкнено" : "Налаштування оновлено", messages[key]);
   } catch (error) {
     toast("Не вдалося зберегти", error.message, "error");
     await loadState({ silent: true });
@@ -239,6 +387,7 @@ function debounce(fn, wait = 300) {
 
 function bindEvents() {
   $$(".nav-item").forEach(item => item.addEventListener("click", () => changeView(item.dataset.view)));
+  $$(".page-tab").forEach(item => item.addEventListener("click", () => changePageTab(item.dataset.pageTab)));
   $("#syncPagesButton").addEventListener("click", syncPages);
   $("#refreshButton").addEventListener("click", async () => {
     await Promise.all([loadState({ silent: true }), loadComments({ silent: true })]);
@@ -246,6 +395,21 @@ function bindEvents() {
   });
   $("#autoHideToggle").addEventListener("change", event => saveSetting("auto_hide", event.target.checked));
   $("#skipOwnToggle").addEventListener("change", event => saveSetting("skip_page_comments", event.target.checked));
+  $("#whitelistToggle").addEventListener("change", event => saveSetting("whitelist_enabled", event.target.checked));
+  $("#whitelistInput").addEventListener("input", updateWhitelistHint);
+  $("#saveWhitelistButton").addEventListener("click", saveWhitelist);
+  $("#importWhitelistButton").addEventListener("click", () => $("#whitelistFile").click());
+  $("#whitelistFile").addEventListener("change", async event => {
+    const file = event.target.files[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      toast("Файл завеликий", "Максимальний розмір TXT — 2 МБ.", "error"); return;
+    }
+    $("#whitelistInput").value = await file.text();
+    updateWhitelistHint();
+    toast("TXT завантажено", "Перевір ID та натисни «Зберегти список».");
+    event.target.value = "";
+  });
   $("#pageFilter").addEventListener("change", event => { app.filters.page_id = event.target.value; loadComments(); });
   $("#commentSearch").addEventListener("input", debounce(event => { app.filters.search = event.target.value; loadComments({ silent: true }); }));
   $$("#statusFilter button").forEach(button => button.addEventListener("click", () => {
@@ -256,7 +420,7 @@ function bindEvents() {
 
 async function start() {
   bindEvents();
-  await Promise.all([loadState(), loadComments({ silent: true })]);
+  await Promise.all([loadState(), loadComments({ silent: true }), loadWhitelist()]);
   app.poller = setInterval(async () => {
     if (!document.hidden) {
       await loadState({ silent: true });

@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=2">
 </head>
 <body>
   <div class="noise"></div>
@@ -81,11 +81,46 @@
         <article class="stat-card orange"><span class="stat-icon">!</span><small>ПОМИЛКИ</small><strong id="errorsStat">0</strong><p>потребують уваги</p></article>
       </div>
 
-      <div class="section-head">
-        <div><h3>Доступні фанпейджі <span id="pagesCount">0</span></h3><p>Вмикай webhook окремо для кожної сторінки</p></div>
-        <button class="primary-button" id="syncPagesButton"><span>↻</span> Синхронізувати з Meta</button>
+      <div class="page-tabs" role="tablist">
+        <button class="page-tab active" data-page-tab="fanpages"><span>◫</span> Фанпейджі <b id="pagesCount">0</b></button>
+        <button class="page-tab" data-page-tab="whitelist"><span>♢</span> Білий список <b id="whitelistCount">0</b></button>
       </div>
-      <div class="pages-grid" id="pagesGrid"></div>
+
+      <div class="page-subview active" id="fanpagesSubView">
+        <div class="section-head">
+          <div><h3>Доступні фанпейджі</h3><p>Перетягуй рядки, додавай примітки та вмикай webhook окремо</p></div>
+          <button class="primary-button" id="syncPagesButton"><span>↻</span> Синхронізувати з Meta</button>
+        </div>
+        <div class="pages-list" id="pagesGrid"></div>
+      </div>
+
+      <div class="page-subview" id="whitelistSubView">
+        <article class="whitelist-card">
+          <div class="whitelist-heading">
+            <div>
+              <div class="eyebrow lime">◇ SAFE AUDIENCE</div>
+              <h3>Білий список користувачів</h3>
+              <p>Коли функція увімкнена, коментарі від цих Facebook User ID залишаються видимими.</p>
+            </div>
+            <label class="mini-setting whitelist-switch">
+              <span><b>Білі списки</b><small id="whitelistState">Вимкнено</small></span>
+              <span class="switch"><input type="checkbox" id="whitelistToggle"><span class="slider"><i></i></span></span>
+            </label>
+          </div>
+          <div class="whitelist-editor">
+            <label for="whitelistInput">Facebook User ID — кожен з нового рядка</label>
+            <textarea id="whitelistInput" spellcheck="false" placeholder="100012345678901&#10;100098765432109"></textarea>
+            <div class="whitelist-footer">
+              <div class="import-box">
+                <input type="file" id="whitelistFile" accept=".txt,text/plain" hidden>
+                <button class="secondary-button" id="importWhitelistButton"><span>＋</span> Завантажити TXT</button>
+                <small id="whitelistHint">0 унікальних ID</small>
+              </div>
+              <button class="primary-button" id="saveWhitelistButton">Зберегти список</button>
+            </div>
+          </div>
+        </article>
+      </div>
     </section>
 
     <section class="view" id="commentsView">
@@ -125,6 +160,6 @@
   <div class="toast-stack" id="toastStack"></div>
   <div class="loading-overlay" id="loadingOverlay"><div class="loader"><i></i><i></i><i></i></div><p id="loadingText">Зв’язуємось із Meta...</p></div>
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=2"></script>
 </body>
 </html>

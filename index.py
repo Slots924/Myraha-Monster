@@ -76,8 +76,16 @@ def initialize_database():
                 followers_count INTEGER DEFAULT 0,
                 access_token TEXT DEFAULT '',
                 subscribed INTEGER DEFAULT 0,
+                note TEXT DEFAULT '',
+                page_url TEXT DEFAULT '',
+                sort_order INTEGER DEFAULT 0,
                 last_sync_at TEXT,
                 last_error TEXT DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS whitelist (
+                user_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS comments (
@@ -103,8 +111,24 @@ def initialize_database():
                 ON comments(page_id, received_at DESC);
             """
         )
+        page_columns = {row["name"] for row in db.execute("PRAGMA table_info(pages)")}
+        for name, definition in {
+            "note": "TEXT DEFAULT ''",
+            "page_url": "TEXT DEFAULT ''",
+            "sort_order": "INTEGER DEFAULT 0",
+        }.items():
+            if name not in page_columns:
+                db.execute(f"ALTER TABLE pages ADD COLUMN {name} {definition}")
+        unordered = db.execute(
+            "SELECT id FROM pages WHERE sort_order IS NULL OR sort_order=0 ORDER BY rowid"
+        ).fetchall()
+        next_order = db.execute("SELECT COALESCE(MAX(sort_order), 0) FROM pages").fetchone()[0]
+        for row in unordered:
+            next_order += 1
+            db.execute("UPDATE pages SET sort_order=? WHERE id=?", (next_order, row["id"]))
         db.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('auto_hide', '0')")
         db.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('skip_page_comments', '1')")
+        db.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('whitelist_enabled', '0')")
 
 
 class MetaAPIError(RuntimeError):
@@ -158,7 +182,7 @@ def collect_paginated(path, token, params=None, limit=500):
 
 
 def page_fields():
-    return "id,name,category,picture.type(square){url},followers_count,access_token"
+    return "id,name,category,link,picture.type(square){url},followers_count,access_token"
 
 
 def sync_pages_from_meta():
@@ -186,21 +210,25 @@ def sync_pages_from_meta():
     unique_pages = {str(page["id"]): page for page in candidates if page.get("id")}
     synced_at = utc_now()
     with db_connection() as db:
+        next_order = db.execute("SELECT COALESCE(MAX(sort_order), 0) FROM pages").fetchone()[0]
         for page in unique_pages.values():
+            next_order += 1
             picture_url = page.get("picture", {}).get("data", {}).get("url", "")
             db.execute(
                 """
                 INSERT INTO pages(id, name, category, picture_url, followers_count,
-                                  access_token, last_sync_at, last_error)
-                VALUES(?, ?, ?, ?, ?, ?, ?, '')
+                                  access_token, page_url, sort_order, last_sync_at, last_error)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, '')
                 ON CONFLICT(id) DO UPDATE SET
                     name=excluded.name, category=excluded.category,
                     picture_url=excluded.picture_url, followers_count=excluded.followers_count,
+                    page_url=CASE WHEN excluded.page_url != '' THEN excluded.page_url ELSE pages.page_url END,
                     access_token=CASE WHEN excluded.access_token != '' THEN excluded.access_token ELSE pages.access_token END,
                     last_sync_at=excluded.last_sync_at, last_error=''
                 """,
                 (str(page["id"]), page.get("name", f"Page {page['id']}"), page.get("category", ""),
-                 picture_url, int(page.get("followers_count") or 0), page.get("access_token", ""), synced_at),
+                 picture_url, int(page.get("followers_count") or 0), page.get("access_token", ""),
+                 page.get("link", ""), next_order, synced_at),
             )
     if not unique_pages and errors:
         raise MetaAPIError(" · ".join(dict.fromkeys(errors)))
@@ -226,13 +254,64 @@ def list_pages():
         rows = db.execute(
             """
             SELECT p.id, p.name, p.category, p.picture_url, p.followers_count,
-                   p.subscribed, p.last_sync_at, p.last_error,
+                   p.subscribed, p.note, p.page_url, p.sort_order, p.last_sync_at, p.last_error,
                    COUNT(c.id) AS comment_count, COALESCE(SUM(c.is_hidden), 0) AS hidden_count
             FROM pages p LEFT JOIN comments c ON c.page_id=p.id
-            GROUP BY p.id ORDER BY p.subscribed DESC, p.name COLLATE NOCASE
+            GROUP BY p.id ORDER BY p.sort_order, p.name COLLATE NOCASE
             """
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def list_whitelist():
+    with db_connection() as db:
+        return [row["user_id"] for row in db.execute("SELECT user_id FROM whitelist ORDER BY rowid")]
+
+
+def replace_whitelist(user_ids):
+    if not isinstance(user_ids, list):
+        raise ValueError("Список ID має бути масивом")
+    cleaned = []
+    for raw_id in user_ids:
+        user_id = str(raw_id).strip()
+        if not user_id:
+            continue
+        if not user_id.isdigit() or len(user_id) > 64:
+            raise ValueError(f"Некоректний Facebook User ID: {user_id[:40]}")
+        if user_id not in cleaned:
+            cleaned.append(user_id)
+    if len(cleaned) > 10000:
+        raise ValueError("Максимум 10 000 ID у білому списку")
+    with db_connection() as db:
+        db.execute("DELETE FROM whitelist")
+        db.executemany(
+            "INSERT INTO whitelist(user_id, created_at) VALUES(?, ?)",
+            [(user_id, utc_now()) for user_id in cleaned],
+        )
+    return cleaned
+
+
+def update_page_note(page_id, note):
+    note = str(note or "").strip()
+    if len(note) > 160:
+        raise ValueError("Примітка може містити максимум 160 символів")
+    with db_connection() as db:
+        result = db.execute("UPDATE pages SET note=? WHERE id=?", (note, page_id))
+        if not result.rowcount:
+            raise ValueError("Сторінку не знайдено")
+
+
+def reorder_pages(page_ids):
+    if not isinstance(page_ids, list):
+        raise ValueError("Порядок сторінок має бути масивом")
+    normalized = [str(page_id) for page_id in page_ids]
+    if len(normalized) != len(set(normalized)):
+        raise ValueError("У порядку сторінок є дублікати")
+    with db_connection() as db:
+        existing = {row["id"] for row in db.execute("SELECT id FROM pages")}
+        if set(normalized) != existing:
+            raise ValueError("Список сторінок змінився. Онови панель і спробуй ще раз")
+        db.executemany("UPDATE pages SET sort_order=? WHERE id=?", enumerate(normalized, 1))
 
 
 def dashboard_state():
@@ -248,6 +327,8 @@ def dashboard_state():
     return {
         "auto_hide": get_setting("auto_hide", "0") == "1",
         "skip_page_comments": get_setting("skip_page_comments", "1") == "1",
+        "whitelist_enabled": get_setting("whitelist_enabled", "0") == "1",
+        "whitelist_count": len(list_whitelist()),
         "token_configured": bool(SYSTEM_USER_TOKEN), "graph_version": GRAPH_API_VERSION,
         "pages": list_pages(), "stats": stats,
     }
@@ -310,7 +391,14 @@ def save_webhook_comment(page_id, value, raw_payload):
     created, now = created or utc_now(), utc_now()
     author_id = str(author.get("id") or "")
     should_hide = get_setting("auto_hide", "0") == "1"
-    if author_id == str(page_id) and get_setting("skip_page_comments", "1") == "1":
+    whitelist_enabled = get_setting("whitelist_enabled", "0") == "1"
+    with db_connection() as db:
+        whitelisted = bool(author_id and db.execute(
+            "SELECT 1 FROM whitelist WHERE user_id=?", (author_id,)
+        ).fetchone())
+    if whitelist_enabled and whitelisted:
+        status, should_hide = "whitelisted", False
+    elif author_id == str(page_id) and get_setting("skip_page_comments", "1") == "1":
         status, should_hide = "skipped", False
     else:
         status = "queued" if should_hide else "visible"
@@ -460,6 +548,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(200, dashboard_state()); return
         if parsed.path == "/api/comments":
             self.send_json(200, {"comments": list_comments(query)}); return
+        if parsed.path == "/api/whitelist":
+            self.send_json(200, {"user_ids": list_whitelist()}); return
         if parsed.path == "/api/health":
             self.send_json(200, {"ok": True, "time": utc_now(), "token_configured": bool(SYSTEM_USER_TOKEN)}); return
         self.serve_static(parsed.path)
@@ -482,8 +572,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result = sync_pages_from_meta()
                 self.send_json(200, {"ok": True, **result, "state": dashboard_state()}); return
             if parsed.path == "/api/settings":
-                for key in {"auto_hide", "skip_page_comments"}.intersection(data):
+                for key in {"auto_hide", "skip_page_comments", "whitelist_enabled"}.intersection(data):
                     set_setting(key, "1" if bool(data[key]) else "0")
+                self.send_json(200, {"ok": True, "state": dashboard_state()}); return
+            if parsed.path == "/api/whitelist":
+                user_ids = replace_whitelist(data.get("user_ids", []))
+                self.send_json(200, {"ok": True, "user_ids": user_ids, "state": dashboard_state()}); return
+            if parsed.path == "/api/pages/reorder":
+                reorder_pages(data.get("page_ids"))
+                self.send_json(200, {"ok": True, "state": dashboard_state()}); return
+            if parsed.path.startswith("/api/pages/") and parsed.path.endswith("/details"):
+                page_id = parsed.path.split("/")[3]
+                update_page_note(page_id, data.get("note", ""))
                 self.send_json(200, {"ok": True, "state": dashboard_state()}); return
             if parsed.path.startswith("/api/pages/") and parsed.path.endswith("/subscription"):
                 page_id = parsed.path.split("/")[3]
