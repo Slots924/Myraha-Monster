@@ -74,6 +74,7 @@ function renderState() {
   $("#todayStat").textContent = formatNumber(state.stats.today);
   $("#errorsStat").textContent = formatNumber(state.stats.errors);
   $("#pagesCount").textContent = state.pages.length;
+  $("#archiveCount").textContent = (state.archived_pages || []).length;
   if (!$(".page-editor-input:focus")) renderPages();
   renderPageFilter();
 }
@@ -101,6 +102,11 @@ function groupPagesByGeo(pages) {
 }
 
 function pageSelect(field, value, values, placeholder) {
+  if (field === "geo") return `<div class="select-field ${value ? "has-value" : ""}">
+    <label>GEO</label>
+    <input class="page-select geo-search" data-field="geo" list="geoOptions" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" autocomplete="off">
+    ${value ? `<button class="clear-select" data-field="geo" title="Очистити GEO">×</button>` : ""}
+  </div>`;
   return `<div class="select-field ${value ? "has-value" : ""}">
     <label>${field === "geo" ? "GEO" : "МОВА"}</label>
     <select class="page-select" data-field="${field}">${selectOptions(values, value, placeholder)}</select>
@@ -188,6 +194,29 @@ async function copyText(value, successMessage) {
   } catch (error) {
     toast("Не вдалося скопіювати", "Скопіюй значення вручну.", "error");
   }
+}
+
+function renderPageCard(page, archived = false) {
+  const url = facebookPageUrl(page), photo = page.picture_url ? `<img src="${escapeHtml(page.picture_url)}" alt="">` : `<span>${escapeHtml(initials(page.name))}</span>`;
+  const actions = `<div class="page-identifiers"><span>ID ${escapeHtml(page.id)}</span><button class="tiny-action copy-page-id" title="Копіювати ID">▣</button><button class="tiny-action copy-page-link" title="Копіювати посилання">↗</button><a class="tiny-action" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Відкрити фанпейдж">◰</a></div>`;
+  const counters = `<div class="page-meta"><span><b>${formatNumber(page.followers_count)}</b> читачів</span><span><b>${formatNumber(page.comment_count)}</b> коментарів</span></div>`;
+  if (archived) return `<article class="page-card archive-card" data-page-id="${escapeHtml(page.id)}"><div class="page-photo">${photo}</div><div class="page-main-info"><div class="page-title-row"><div><h3>${escapeHtml(page.name)}</h3><p>Архівована фанпейдж · webhook вимкнено</p></div><span class="page-status-dot">● ARCHIVED</span></div><div class="page-bottom-row">${actions}${counters}</div></div><button class="restore-page" title="Відновити">↶ <span>Відновити</span></button></article>`;
+  return `<article class="page-card ${page.subscribed ? "on" : ""}" data-page-id="${escapeHtml(page.id)}"><div class="page-switch-zone"><label class="switch" title="Увімкнути або вимкнути webhook"><input class="page-toggle" type="checkbox" data-page-id="${escapeHtml(page.id)}" ${page.subscribed ? "checked" : ""}><span class="slider"><i></i></span></label></div><div class="page-photo">${photo}</div><div class="page-main-info"><h3>${escapeHtml(page.name)}</h3>${actions}</div><div class="page-properties">${pageSelect("geo", page.geo || "", GEO_OPTIONS, "GEO")}<label class="text-field note-field"><span>НОМЕР КРЕАТИВУ</span><input class="page-editor-input page-note" maxlength="20" value="${escapeHtml(page.note || "")}" placeholder="Напр. 1042"></label><button class="page-save" title="Зберегти примітку та GEO">✓</button></div><div class="page-webhook"><span class="page-status-dot">● ${page.subscribed ? "WEBHOOK ACTIVE" : "WEBHOOK OFF"}</span>${counters}</div><button class="archive-page" title="Перенести в архів">⌫</button>${page.last_error ? `<p class="page-error">${escapeHtml(page.last_error)}</p>` : ""}</article>`;
+}
+
+function renderPages() {
+  const grid = $("#pagesGrid"), archive = $("#archiveGrid"), pages = app.state.pages, archived = app.state.archived_pages || [];
+  if (!pages.length) grid.innerHTML = `<div class="empty-pages"><span>◉</span><h3>Фанпейджів ще немає</h3><p>Синхронізуйте список з Meta.</p></div>`;
+  else grid.innerHTML = [...groupPagesByGeo(pages)].map(([geo, group]) => `<section class="geo-group"><header class="geo-group-head"><span>${geo || "—"}</span><h3>${geo ? `GEO · ${geo}` : "Без GEO"}</h3><small>${group.length}</small></header><div class="geo-page-list">${group.map(page => renderPageCard(page)).join("")}</div></section>`).join("");
+  archive.innerHTML = archived.length ? archived.map(page => renderPageCard(page, true)).join("") : `<div class="empty-pages"><span>▱</span><h3>Архів порожній</h3><p>Перенесені сюди фанпейджі можна буде відновити.</p></div>`;
+  $$(".page-toggle", grid).forEach(toggle => toggle.addEventListener("change", changePageSubscription));
+  $$(".page-save", grid).forEach(button => button.addEventListener("click", savePageDetails));
+  $$(".page-select", grid).forEach(select => select.addEventListener("change", savePageDetails));
+  $$(".clear-select", grid).forEach(button => button.addEventListener("click", event => { const card = event.currentTarget.closest(".page-card"); card.querySelector(`.page-select[data-field="${event.currentTarget.dataset.field}"]`).value = ""; savePageDetails({ currentTarget: event.currentTarget }); }));
+  $$(".page-editor-input", grid).forEach(input => input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); input.closest(".page-card").querySelector(".page-save").click(); } }));
+  $$(".archive-page", grid).forEach(button => button.addEventListener("click", archiveFanpage));
+  $$(".restore-page", archive).forEach(button => button.addEventListener("click", restoreFanpage));
+  bindPageTools(grid, pages); bindPageTools(archive, archived);
 }
 
 async function savePageDetails(event) {
@@ -435,6 +464,78 @@ async function start() {
       if ($("#commentsView").classList.contains("active")) await loadComments({ silent: true });
     }
   }, 12000);
+}
+
+function renderPageCard(page, archived = false) {
+  const url = facebookPageUrl(page), photo = page.picture_url ? `<img src="${escapeHtml(page.picture_url)}" alt="">` : `<span>${escapeHtml(initials(page.name))}</span>`;
+  const actions = `<div class="page-identifiers"><span>ID ${escapeHtml(page.id)}</span><button class="tiny-action copy-page-id" title="Копіювати ID">▣</button><button class="tiny-action copy-page-link" title="Копіювати посилання">↗</button><a class="tiny-action" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Відкрити фанпейдж">◰</a></div>`;
+  const counters = `<div class="page-meta"><span><b>${formatNumber(page.followers_count)}</b> читачів</span><span><b>${formatNumber(page.comment_count)}</b> коментарів</span></div>`;
+  if (archived) return `<article class="page-card archive-card" data-page-id="${escapeHtml(page.id)}"><div class="page-photo">${photo}</div><div class="page-main-info"><div class="page-title-row"><div><h3>${escapeHtml(page.name)}</h3><p>Архівована фанпейдж · webhook вимкнено</p></div><span class="page-status-dot">● ARCHIVED</span></div><div class="page-bottom-row">${actions}${counters}</div></div><button class="restore-page" title="Відновити">↶ <span>Відновити</span></button></article>`;
+  return `<article class="page-card ${page.subscribed ? "on" : ""}" data-page-id="${escapeHtml(page.id)}"><div class="page-switch-zone"><label class="switch" title="Увімкнути або вимкнути webhook"><input class="page-toggle" type="checkbox" data-page-id="${escapeHtml(page.id)}" ${page.subscribed ? "checked" : ""}><span class="slider"><i></i></span></label><span class="page-live ${page.subscribed ? "" : "off"}">${page.subscribed ? "ON" : "OFF"}</span></div><div class="page-photo">${photo}</div><div class="page-main-info"><div class="page-title-row"><div><h3>${escapeHtml(page.name)}</h3><p>${escapeHtml(page.category || "Facebook Page")}</p></div><span class="page-status-dot">● ${page.subscribed ? "WEBHOOK ACTIVE" : "WEBHOOK OFF"}</span></div><div class="page-bottom-row">${actions}${counters}</div></div><div class="page-properties">${pageSelect("geo", page.geo || "", GEO_OPTIONS, "Оберіть GEO")}<label class="text-field note-field"><span>ПРИМІТКА</span><input class="page-editor-input page-note" maxlength="160" value="${escapeHtml(page.note || "")}" placeholder="Текстова мітка для фанки"></label><button class="page-save">Зберегти</button></div><button class="archive-page" title="Перенести в архів">⌫</button>${page.last_error ? `<p class="page-error">${escapeHtml(page.last_error)}</p>` : ""}</article>`;
+}
+
+function bindPageTools(root, collection) {
+  $$(".copy-page-id", root).forEach(button => button.addEventListener("click", () => copyText(button.closest(".page-card").dataset.pageId, "ID скопійовано")));
+  $$(".copy-page-link", root).forEach(button => button.addEventListener("click", () => { const page = collection.find(item => item.id === button.closest(".page-card").dataset.pageId); copyText(facebookPageUrl(page), "Посилання скопійовано"); }));
+}
+
+function renderPages() {
+  const grid = $("#pagesGrid"), archive = $("#archiveGrid"), pages = app.state.pages, archived = app.state.archived_pages || [];
+  grid.innerHTML = pages.length ? pages.map(page => renderPageCard(page)).join("") : `<div class="empty-pages"><span>◉</span><h3>Фанпейджів ще немає</h3><p>Синхронізуйте список з Meta.</p></div>`;
+  archive.innerHTML = archived.length ? archived.map(page => renderPageCard(page, true)).join("") : `<div class="empty-pages"><span>▱</span><h3>Архів порожній</h3><p>Перенесені сюди фанпейджі можна буде відновити.</p></div>`;
+  $$(".page-toggle", grid).forEach(toggle => toggle.addEventListener("change", changePageSubscription));
+  $$(".page-save", grid).forEach(button => button.addEventListener("click", savePageDetails));
+  $$(".page-select", grid).forEach(select => select.addEventListener("change", savePageDetails));
+  $$(".page-editor-input", grid).forEach(input => input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); input.closest(".page-card").querySelector(".page-save").click(); } }));
+  $$(".archive-page", grid).forEach(button => button.addEventListener("click", archiveFanpage));
+  $$(".restore-page", archive).forEach(button => button.addEventListener("click", restoreFanpage));
+  bindPageTools(grid, pages); bindPageTools(archive, archived);
+}
+
+async function savePageDetails(event) {
+  const card = event.currentTarget.closest(".page-card"), button = card.querySelector(".page-save");
+  button.disabled = true;
+  try {
+    const old = app.state.pages.find(page => page.id === card.dataset.pageId);
+    const result = await api(`/api/pages/${encodeURIComponent(card.dataset.pageId)}/details`, { method: "POST", body: JSON.stringify({ note: card.querySelector(".page-note").value, creative_name: old.creative_name || "", geo: card.querySelector('.page-select[data-field="geo"]').value, language: old.language || "" }) });
+    app.state = result.state; renderState(); toast("Фанку оновлено", "Зміни збережені.");
+  } catch (error) { toast("Не вдалося оновити фанку", error.message, "error"); await loadState({ silent: true }); }
+  finally { button.disabled = false; }
+}
+
+async function archiveFanpage(event) {
+  const button = event.currentTarget, id = button.closest(".page-card").dataset.pageId; button.disabled = true;
+  try { const result = await api(`/api/pages/${encodeURIComponent(id)}/archive`, { method: "POST", body: "{}" }); app.state = result.state; renderState(); toast("Фанку перенесено в архів", "Webhook вимкнено."); }
+  catch (error) { button.disabled = false; toast("Не вдалося архівувати", error.message, "error"); }
+}
+
+async function restoreFanpage(event) {
+  const button = event.currentTarget, id = button.closest(".page-card").dataset.pageId; button.disabled = true;
+  try { const result = await api(`/api/pages/${encodeURIComponent(id)}/restore`, { method: "POST", body: "{}" }); app.state = result.state; renderState(); toast("Фанку відновлено", "Webhook залишається вимкненим."); }
+  catch (error) { button.disabled = false; toast("Не вдалося відновити", error.message, "error"); }
+}
+
+function renderPageCard(page, archived = false) {
+  const url = facebookPageUrl(page), photo = page.picture_url ? `<img src="${escapeHtml(page.picture_url)}" alt="">` : `<span>${escapeHtml(initials(page.name))}</span>`;
+  const actions = `<div class="page-identifiers"><span>ID ${escapeHtml(page.id)}</span><button class="tiny-action copy-page-id" title="Копіювати ID">▣</button><button class="tiny-action copy-page-link" title="Копіювати посилання">↗</button><a class="tiny-action" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Відкрити фанпейдж">◰</a></div>`;
+  const counters = `<div class="page-meta"><span><b>${formatNumber(page.followers_count)}</b> читачів</span><span><b>${formatNumber(page.comment_count)}</b> коментарів</span></div>`;
+  if (archived) return `<article class="page-card archive-card" data-page-id="${escapeHtml(page.id)}"><div class="page-photo">${photo}</div><div class="page-main-info"><div class="page-title-row"><div><h3>${escapeHtml(page.name)}</h3><p>Архівована фанпейдж · webhook вимкнено</p></div><span class="page-status-dot">● ARCHIVED</span></div><div class="page-bottom-row">${actions}${counters}</div></div><button class="restore-page" title="Відновити">↶ <span>Відновити</span></button></article>`;
+  return `<article class="page-card ${page.subscribed ? "on" : ""}" data-page-id="${escapeHtml(page.id)}"><div class="page-switch-zone"><label class="switch" title="Увімкнути або вимкнути webhook"><input class="page-toggle" type="checkbox" data-page-id="${escapeHtml(page.id)}" ${page.subscribed ? "checked" : ""}><span class="slider"><i></i></span></label></div><div class="page-photo">${photo}</div><div class="page-main-info"><h3>${escapeHtml(page.name)}</h3>${actions}</div><div class="page-properties">${pageSelect("geo", page.geo || "", GEO_OPTIONS, "GEO")}<label class="text-field note-field"><span>НОМЕР КРЕАТИВУ</span><input class="page-editor-input page-note" maxlength="20" value="${escapeHtml(page.note || "")}" placeholder="Напр. 1042"></label><button class="page-save" title="Зберегти примітку та GEO">✓</button></div><div class="page-webhook"><span class="page-status-dot">● ${page.subscribed ? "WEBHOOK ACTIVE" : "WEBHOOK OFF"}</span>${counters}</div><button class="archive-page" title="Перенести в архів">⌫</button>${page.last_error ? `<p class="page-error">${escapeHtml(page.last_error)}</p>` : ""}</article>`;
+}
+
+function renderPages() {
+  const grid = $("#pagesGrid"), archive = $("#archiveGrid"), pages = app.state.pages, archived = app.state.archived_pages || [];
+  if (!pages.length) grid.innerHTML = `<div class="empty-pages"><span>◉</span><h3>Фанпейджів ще немає</h3><p>Синхронізуйте список з Meta.</p></div>`;
+  else grid.innerHTML = [...groupPagesByGeo(pages)].map(([geo, group]) => `<section class="geo-group"><header class="geo-group-head"><span>${geo || "—"}</span><h3>${geo ? `GEO · ${geo}` : "Без GEO"}</h3><small>${group.length}</small></header><div class="geo-page-list">${group.map(page => renderPageCard(page)).join("")}</div></section>`).join("");
+  archive.innerHTML = archived.length ? archived.map(page => renderPageCard(page, true)).join("") : `<div class="empty-pages"><span>▱</span><h3>Архів порожній</h3><p>Перенесені сюди фанпейджі можна буде відновити.</p></div>`;
+  $$(".page-toggle", grid).forEach(toggle => toggle.addEventListener("change", changePageSubscription));
+  $$(".page-save", grid).forEach(button => button.addEventListener("click", savePageDetails));
+  $$(".page-select", grid).forEach(select => select.addEventListener("change", savePageDetails));
+  $$(".clear-select", grid).forEach(button => button.addEventListener("click", event => { const card = event.currentTarget.closest(".page-card"); card.querySelector(`.page-select[data-field="${event.currentTarget.dataset.field}"]`).value = ""; savePageDetails({ currentTarget: event.currentTarget }); }));
+  $$(".page-editor-input", grid).forEach(input => input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); input.closest(".page-card").querySelector(".page-save").click(); } }));
+  $$(".archive-page", grid).forEach(button => button.addEventListener("click", archiveFanpage));
+  $$(".restore-page", archive).forEach(button => button.addEventListener("click", restoreFanpage));
+  bindPageTools(grid, pages); bindPageTools(archive, archived);
 }
 
 start();

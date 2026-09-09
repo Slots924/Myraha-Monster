@@ -82,6 +82,7 @@
       </div>
 
       <div class="page-tabs" role="tablist">
+        <button class="page-tab" data-page-tab="archive"><span>▱</span> Архів <b id="archiveCount">0</b></button>
         <button class="page-tab active" data-page-tab="fanpages"><span>◫</span> Фанпейджі <b id="pagesCount">0</b></button>
         <button class="page-tab" data-page-tab="whitelist"><span>♢</span> Білий список <b id="whitelistCount">0</b></button>
       </div>
@@ -92,6 +93,13 @@
           <button class="primary-button" id="syncPagesButton"><span>↻</span> Синхронізувати з Meta</button>
         </div>
         <div class="pages-list" id="pagesGrid"></div>
+      </div>
+
+      <div class="page-subview" id="archiveSubView">
+        <div class="section-head archive-heading">
+          <div><h3>Архів фанпейджів</h3><p>Webhook для сторінок в архіві вимкнений. Відновлення не вмикає його автоматично.</p></div>
+        </div>
+        <div class="pages-list archive-list" id="archiveGrid"></div>
       </div>
 
       <div class="page-subview" id="whitelistSubView">
@@ -158,6 +166,7 @@
   </main>
 
   <div class="toast-stack" id="toastStack"></div>
+  <datalist id="geoOptions"><option value="US"><option value="ES"><option value="FR"><option value="DE"><option value="IT"><option value="GB"><option value="CA"><option value="AU"><option value="BR"><option value="MX"><option value="PL"><option value="PT"><option value="NL"><option value="BE"><option value="SE"><option value="NO"><option value="DK"><option value="FI"><option value="AT"><option value="CH"><option value="RO"><option value="HU"><option value="CZ"><option value="SK"><option value="UA"></datalist>
   <div class="loading-overlay" id="loadingOverlay"><div class="loader"><i></i><i></i><i></i></div><p id="loadingText">Зв’язуємось із Meta...</p></div>
 
   <script src="/app.js?v=4"></script>

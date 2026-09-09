@@ -82,6 +82,7 @@ def initialize_database():
                 creative_name TEXT DEFAULT '',
                 page_url TEXT DEFAULT '',
                 sort_order INTEGER DEFAULT 0,
+                archived INTEGER DEFAULT 0,
                 last_sync_at TEXT,
                 last_error TEXT DEFAULT ''
             );
@@ -122,6 +123,7 @@ def initialize_database():
             "creative_name": "TEXT DEFAULT ''",
             "page_url": "TEXT DEFAULT ''",
             "sort_order": "INTEGER DEFAULT 0",
+            "archived": "INTEGER DEFAULT 0",
         }.items():
             if name not in page_columns:
                 db.execute(f"ALTER TABLE pages ADD COLUMN {name} {definition}")
@@ -255,7 +257,7 @@ def set_setting(key, value):
         )
 
 
-def list_pages():
+def list_pages(archived=False):
     with db_connection() as db:
         rows = db.execute(
             """
@@ -264,9 +266,10 @@ def list_pages():
                    p.page_url, p.sort_order, p.last_sync_at, p.last_error,
                    COUNT(c.id) AS comment_count, COALESCE(SUM(c.is_hidden), 0) AS hidden_count
             FROM pages p LEFT JOIN comments c ON c.page_id=p.id
+            WHERE p.archived=?
             GROUP BY p.id
             ORDER BY CASE WHEN p.geo='' THEN 1 ELSE 0 END, p.geo, p.name COLLATE NOCASE
-            """
+            """, (1 if archived else 0,)
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -352,7 +355,7 @@ def dashboard_state():
         "whitelist_enabled": get_setting("whitelist_enabled", "0") == "1",
         "whitelist_count": len(list_whitelist()),
         "token_configured": bool(SYSTEM_USER_TOKEN), "graph_version": GRAPH_API_VERSION,
-        "pages": list_pages(), "stats": stats,
+        "pages": list_pages(), "archived_pages": list_pages(archived=True), "stats": stats,
     }
 
 
@@ -373,6 +376,24 @@ def set_page_subscription(page_id, enabled):
         raise
     with db_connection() as db:
         db.execute("UPDATE pages SET subscribed=?, last_error='' WHERE id=?", (1 if enabled else 0, page_id))
+
+
+def archive_page(page_id):
+    with db_connection() as db:
+        page = db.execute("SELECT subscribed FROM pages WHERE id=?", (page_id,)).fetchone()
+    if not page:
+        raise ValueError("Сторінку не знайдено")
+    if page["subscribed"]:
+        set_page_subscription(page_id, False)
+    with db_connection() as db:
+        db.execute("UPDATE pages SET archived=1, subscribed=0 WHERE id=?", (page_id,))
+
+
+def restore_page(page_id):
+    with db_connection() as db:
+        changed = db.execute("UPDATE pages SET archived=0 WHERE id=?", (page_id,)).rowcount
+    if not changed:
+        raise ValueError("Сторінку не знайдено")
 
 
 def update_comment_visibility(comment_id, hidden):
@@ -610,6 +631,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path.startswith("/api/pages/") and parsed.path.endswith("/subscription"):
                 page_id = parsed.path.split("/")[3]
                 set_page_subscription(page_id, bool(data.get("enabled")))
+                self.send_json(200, {"ok": True, "state": dashboard_state()}); return
+            if parsed.path.startswith("/api/pages/") and parsed.path.endswith("/archive"):
+                page_id = parsed.path.split("/")[3]
+                archive_page(page_id)
+                self.send_json(200, {"ok": True, "state": dashboard_state()}); return
+            if parsed.path.startswith("/api/pages/") and parsed.path.endswith("/restore"):
+                page_id = parsed.path.split("/")[3]
+                restore_page(page_id)
                 self.send_json(200, {"ok": True, "state": dashboard_state()}); return
             if parsed.path.startswith("/api/comments/") and parsed.path.endswith("/visibility"):
                 comment_id = parsed.path[len("/api/comments/"):-len("/visibility")].strip("/")
