@@ -77,6 +77,9 @@ def initialize_database():
                 access_token TEXT DEFAULT '',
                 subscribed INTEGER DEFAULT 0,
                 note TEXT DEFAULT '',
+                geo TEXT DEFAULT '',
+                language TEXT DEFAULT '',
+                creative_name TEXT DEFAULT '',
                 page_url TEXT DEFAULT '',
                 sort_order INTEGER DEFAULT 0,
                 last_sync_at TEXT,
@@ -114,6 +117,9 @@ def initialize_database():
         page_columns = {row["name"] for row in db.execute("PRAGMA table_info(pages)")}
         for name, definition in {
             "note": "TEXT DEFAULT ''",
+            "geo": "TEXT DEFAULT ''",
+            "language": "TEXT DEFAULT ''",
+            "creative_name": "TEXT DEFAULT ''",
             "page_url": "TEXT DEFAULT ''",
             "sort_order": "INTEGER DEFAULT 0",
         }.items():
@@ -254,10 +260,12 @@ def list_pages():
         rows = db.execute(
             """
             SELECT p.id, p.name, p.category, p.picture_url, p.followers_count,
-                   p.subscribed, p.note, p.page_url, p.sort_order, p.last_sync_at, p.last_error,
+                   p.subscribed, p.note, p.geo, p.language, p.creative_name,
+                   p.page_url, p.sort_order, p.last_sync_at, p.last_error,
                    COUNT(c.id) AS comment_count, COALESCE(SUM(c.is_hidden), 0) AS hidden_count
             FROM pages p LEFT JOIN comments c ON c.page_id=p.id
-            GROUP BY p.id ORDER BY p.sort_order, p.name COLLATE NOCASE
+            GROUP BY p.id
+            ORDER BY CASE WHEN p.geo='' THEN 1 ELSE 0 END, p.geo, p.name COLLATE NOCASE
             """
         ).fetchall()
     return [dict(row) for row in rows]
@@ -291,27 +299,41 @@ def replace_whitelist(user_ids):
     return cleaned
 
 
-def update_page_note(page_id, note):
+def normalize_code(value, field_name):
+    value = str(value or "").strip().upper()
+    if value and (not value.isalpha() or len(value) not in {2, 3}):
+        raise ValueError(f"{field_name} має бути кодом із 2–3 латинських літер")
+    return value
+
+
+def update_page_details(page_id, note, geo, language, creative_name):
     note = str(note or "").strip()
+    creative_name = str(creative_name or "").strip()
+    geo = normalize_code(geo, "GEO")
+    language = normalize_code(language, "Мова")
     if len(note) > 160:
         raise ValueError("Примітка може містити максимум 160 символів")
+    if len(creative_name) > 120:
+        raise ValueError("Назва креативу може містити максимум 120 символів")
     with db_connection() as db:
-        result = db.execute("UPDATE pages SET note=? WHERE id=?", (note, page_id))
-        if not result.rowcount:
+        page = db.execute("SELECT geo FROM pages WHERE id=?", (page_id,)).fetchone()
+        if not page:
             raise ValueError("Сторінку не знайдено")
-
-
-def reorder_pages(page_ids):
-    if not isinstance(page_ids, list):
-        raise ValueError("Порядок сторінок має бути масивом")
-    normalized = [str(page_id) for page_id in page_ids]
-    if len(normalized) != len(set(normalized)):
-        raise ValueError("У порядку сторінок є дублікати")
-    with db_connection() as db:
-        existing = {row["id"] for row in db.execute("SELECT id FROM pages")}
-        if set(normalized) != existing:
-            raise ValueError("Список сторінок змінився. Онови панель і спробуй ще раз")
-        db.executemany("UPDATE pages SET sort_order=? WHERE id=?", enumerate(normalized, 1))
+        sort_order = None
+        if geo != page["geo"]:
+            sort_order = db.execute(
+                "SELECT COALESCE(MAX(sort_order), 0)+1 FROM pages WHERE geo=?", (geo,)
+            ).fetchone()[0]
+        if sort_order is None:
+            db.execute(
+                "UPDATE pages SET note=?, geo=?, language=?, creative_name=? WHERE id=?",
+                (note, geo, language, creative_name, page_id),
+            )
+        else:
+            db.execute(
+                "UPDATE pages SET note=?, geo=?, language=?, creative_name=?, sort_order=? WHERE id=?",
+                (note, geo, language, creative_name, sort_order, page_id),
+            )
 
 
 def dashboard_state():
@@ -578,12 +600,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/whitelist":
                 user_ids = replace_whitelist(data.get("user_ids", []))
                 self.send_json(200, {"ok": True, "user_ids": user_ids, "state": dashboard_state()}); return
-            if parsed.path == "/api/pages/reorder":
-                reorder_pages(data.get("page_ids"))
-                self.send_json(200, {"ok": True, "state": dashboard_state()}); return
             if parsed.path.startswith("/api/pages/") and parsed.path.endswith("/details"):
                 page_id = parsed.path.split("/")[3]
-                update_page_note(page_id, data.get("note", ""))
+                update_page_details(
+                    page_id, data.get("note", ""), data.get("geo", ""),
+                    data.get("language", ""), data.get("creative_name", ""),
+                )
                 self.send_json(200, {"ok": True, "state": dashboard_state()}); return
             if parsed.path.startswith("/api/pages/") and parsed.path.endswith("/subscription"):
                 page_id = parsed.path.split("/")[3]

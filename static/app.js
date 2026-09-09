@@ -5,7 +5,6 @@ const app = {
   state: null,
   comments: [],
   whitelist: [],
-  draggedPageId: null,
   filters: { page_id: "", status: "all", search: "" },
   poller: null,
 };
@@ -75,7 +74,7 @@ function renderState() {
   $("#todayStat").textContent = formatNumber(state.stats.today);
   $("#errorsStat").textContent = formatNumber(state.stats.errors);
   $("#pagesCount").textContent = state.pages.length;
-  if (!$(".page-note:focus") && !app.draggedPageId) renderPages();
+  if (!$(".page-editor-input:focus")) renderPages();
   renderPageFilter();
 }
 
@@ -84,56 +83,94 @@ function facebookPageUrl(page) {
   return /^https?:\/\//i.test(candidate) ? candidate : `https://www.facebook.com/${encodeURIComponent(page.id)}`;
 }
 
+const GEO_OPTIONS = ["US", "ES", "FR", "DE", "IT", "GB", "CA", "AU", "BR", "MX", "PL", "PT", "NL", "BE", "SE", "NO", "DK", "FI", "AT", "CH", "RO", "HU", "CZ", "SK", "UA"];
+const LANGUAGE_OPTIONS = ["EN", "ES", "FR", "DE", "IT", "PT", "PL", "NL", "RO", "UK", "RU", "CS", "SK", "HU", "SV", "DA", "NO", "FI"];
+
+function selectOptions(values, selected, placeholder) {
+  return `<option value="">${placeholder}</option>` + values.map(value =>
+    `<option value="${value}" ${value === selected ? "selected" : ""}>${value}</option>`).join("");
+}
+
+function groupPagesByGeo(pages) {
+  return pages.reduce((groups, page) => {
+    const geo = page.geo || "";
+    if (!groups.has(geo)) groups.set(geo, []);
+    groups.get(geo).push(page);
+    return groups;
+  }, new Map());
+}
+
+function pageSelect(field, value, values, placeholder) {
+  return `<div class="select-field ${value ? "has-value" : ""}">
+    <label>${field === "geo" ? "GEO" : "МОВА"}</label>
+    <select class="page-select" data-field="${field}">${selectOptions(values, value, placeholder)}</select>
+    ${value ? `<button class="clear-select" data-field="${field}" title="Очистити вибір">×</button>` : ""}
+  </div>`;
+}
+
+function renderPageCard(page) {
+  const pageUrl = facebookPageUrl(page);
+  return `<article class="page-card ${page.subscribed ? "on" : ""}" data-page-id="${escapeHtml(page.id)}">
+    <div class="page-switch-zone">
+      <label class="switch" title="${page.subscribed ? "Відключити webhook" : "Підключити webhook"}">
+        <input class="page-toggle" type="checkbox" data-page-id="${escapeHtml(page.id)}" ${page.subscribed ? "checked" : ""}>
+        <span class="slider"><i></i></span>
+      </label>
+      <span class="page-live ${page.subscribed ? "" : "off"}">${page.subscribed ? "ON" : "OFF"}</span>
+    </div>
+    <div class="page-photo">
+      ${page.picture_url ? `<img src="${escapeHtml(page.picture_url)}" alt="">` : `<span>${escapeHtml(initials(page.name))}</span>`}
+    </div>
+    <div class="page-main-info">
+      <div class="page-title-row"><div><h3>${escapeHtml(page.name)}</h3><p>${escapeHtml(page.category || "Facebook Page")}</p></div><span class="page-status-dot">● ${page.subscribed ? "WEBHOOK ACTIVE" : "OFFLINE"}</span></div>
+      <div class="editor-row">
+        <label class="text-field creative-field"><span>НАЗВА КРЕАТИВУ</span><input class="page-editor-input page-creative" maxlength="120" value="${escapeHtml(page.creative_name || "")}" placeholder="Наприклад: Summer US 01"></label>
+        <label class="text-field note-field"><span>ПРИМІТКА</span><input class="page-editor-input page-note" maxlength="160" value="${escapeHtml(page.note || "")}" placeholder="Країна, ім’я або коротка мітка"></label>
+      </div>
+      <div class="page-bottom-row">
+        <div class="page-identifiers">
+          <span>ID ${escapeHtml(page.id)}</span><button class="tiny-action copy-page-id" title="Копіювати ID">▣</button>
+          <button class="tiny-action copy-page-link" title="Копіювати посилання">↗</button><a class="tiny-action" href="${escapeHtml(pageUrl)}" target="_blank" rel="noopener noreferrer" title="Відкрити фанпейдж">◰</a>
+        </div>
+        <div class="page-meta"><span><b>${formatNumber(page.followers_count)}</b> читачів</span><span><b>${formatNumber(page.comment_count)}</b> коментарів</span></div>
+      </div>
+    </div>
+    <div class="page-properties">
+      ${pageSelect("geo", page.geo || "", GEO_OPTIONS, "Оберіть GEO")}
+      ${pageSelect("language", page.language || "", LANGUAGE_OPTIONS, "Оберіть мову")}
+      <button class="page-save" title="Зберегти поля">Зберегти</button>
+    </div>
+    ${page.last_error ? `<p class="page-error">${escapeHtml(page.last_error)}</p>` : ""}
+  </article>`;
+}
+
 function renderPages() {
   const grid = $("#pagesGrid");
   if (!app.state.pages.length) {
     grid.innerHTML = `<div class="empty-pages"><span>◉</span><h3>Фанпейджів ще немає</h3><p>Натисни «Синхронізувати з Meta», щоб підтягнути доступні сторінки.</p></div>`;
     return;
   }
-  grid.innerHTML = app.state.pages.map(page => {
-    const pageUrl = facebookPageUrl(page);
-    return `
-    <article class="page-card ${page.subscribed ? "on" : ""}" data-page-id="${escapeHtml(page.id)}">
-      <button class="drag-handle" draggable="true" title="Перетягнути сторінку" aria-label="Перетягнути сторінку">⠿</button>
-      <div class="page-top">
-        ${page.picture_url
-          ? `<img class="page-avatar" src="${escapeHtml(page.picture_url)}" alt="">`
-          : `<span class="page-avatar">${escapeHtml(initials(page.name))}</span>`}
-        <div class="page-info"><b>${escapeHtml(page.name)}</b><small>${escapeHtml(page.category || "Facebook Page")}</small></div>
-      </div>
-      <div class="page-note-wrap">
-        <input class="page-note" maxlength="160" value="${escapeHtml(page.note || "")}" data-original="${escapeHtml(page.note || "")}" placeholder="Мітка, ім’я, країна або коротка примітка...">
-        <button class="note-save" title="Зберегти примітку">✓</button>
-      </div>
-      <div class="page-identifiers">
-        <div class="id-line"><code>ID ${escapeHtml(page.id)}</code><button class="tiny-action copy-page-id" title="Копіювати ID">▣</button></div>
-        <div class="link-line"><a href="${escapeHtml(pageUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(pageUrl)}</a><button class="tiny-action copy-page-link" title="Копіювати посилання">▣</button><a class="tiny-action" href="${escapeHtml(pageUrl)}" target="_blank" rel="noopener noreferrer" title="Відкрити фанпейдж">↗</a></div>
-      </div>
-      <div class="page-meta">
-        <span><b>${formatNumber(page.followers_count)}</b> читачів</span>
-        <span><b>${formatNumber(page.comment_count)}</b> коментарів</span>
-      </div>
-      <div class="page-control">
-        <div class="page-control-copy"><b>● ${page.subscribed ? "WEBHOOK ON" : "OFFLINE"}</b><small>${page.subscribed ? "події надходять" : "не підключено"}</small></div>
-        <label class="switch" title="${page.subscribed ? "Відключити webhook" : "Підключити webhook"}">
-          <input class="page-toggle" type="checkbox" data-page-id="${escapeHtml(page.id)}" ${page.subscribed ? "checked" : ""}>
-          <span class="slider"><i></i></span>
-        </label>
-      </div>
-      ${page.last_error ? `<p class="page-error">${escapeHtml(page.last_error)}</p>` : ""}
-    </article>`;
-  }).join("");
+  grid.innerHTML = [...groupPagesByGeo(app.state.pages)].map(([geo, pages]) => `
+    <section class="geo-group">
+      <header class="geo-group-head"><span>${geo || "—"}</span><h3>${geo ? `GEO · ${geo}` : "Без GEO"}</h3><small>${pages.length} ${pages.length === 1 ? "фанка" : "фанок"}</small></header>
+      <div class="geo-page-list">${pages.map(renderPageCard).join("")}</div>
+    </section>`).join("");
   $$(".page-toggle", grid).forEach(toggle => toggle.addEventListener("change", changePageSubscription));
-  $$(".note-save", grid).forEach(button => button.addEventListener("click", savePageNote));
-  $$(".page-note", grid).forEach(input => input.addEventListener("keydown", event => {
-    if (event.key === "Enter") { event.preventDefault(); input.closest(".page-card").querySelector(".note-save").click(); }
+  $$(".page-save", grid).forEach(button => button.addEventListener("click", savePageDetails));
+  $$(".page-select", grid).forEach(select => select.addEventListener("change", savePageDetails));
+  $$(".clear-select", grid).forEach(button => button.addEventListener("click", event => {
+    const card = event.currentTarget.closest(".page-card");
+    card.querySelector(`.page-select[data-field="${event.currentTarget.dataset.field}"]`).value = "";
+    savePageDetails({ currentTarget: event.currentTarget });
+  }));
+  $$(".page-editor-input", grid).forEach(input => input.addEventListener("keydown", event => {
+    if (event.key === "Enter") { event.preventDefault(); input.closest(".page-card").querySelector(".page-save").click(); }
   }));
   $$(".copy-page-id", grid).forEach(button => button.addEventListener("click", () => copyText(button.closest(".page-card").dataset.pageId, "ID скопійовано")));
   $$(".copy-page-link", grid).forEach(button => button.addEventListener("click", () => {
     const page = app.state.pages.find(item => item.id === button.closest(".page-card").dataset.pageId);
     copyText(facebookPageUrl(page), "Посилання скопійовано");
   }));
-  bindPageDragging(grid);
 }
 
 function renderPageFilter() {
@@ -153,60 +190,26 @@ async function copyText(value, successMessage) {
   }
 }
 
-async function savePageNote(event) {
+async function savePageDetails(event) {
   const card = event.currentTarget.closest(".page-card");
-  const input = card.querySelector(".page-note");
-  event.currentTarget.disabled = true;
+  const saveButton = card.querySelector(".page-save");
+  saveButton.disabled = true;
   try {
     const result = await api(`/api/pages/${encodeURIComponent(card.dataset.pageId)}/details`, {
-      method: "POST", body: JSON.stringify({ note: input.value }),
+      method: "POST", body: JSON.stringify({
+        note: card.querySelector(".page-note").value,
+        creative_name: card.querySelector(".page-creative").value,
+        geo: card.querySelector('.page-select[data-field="geo"]').value,
+        language: card.querySelector('.page-select[data-field="language"]').value,
+      }),
     });
     app.state = result.state;
-    input.dataset.original = input.value.trim();
-    toast("Примітку збережено", "Вона залишиться після перезапуску.");
+    renderState();
+    toast("Фанку оновлено", "Поля збережені.");
   } catch (error) {
-    toast("Не вдалося зберегти примітку", error.message, "error");
-  } finally { event.currentTarget.disabled = false; }
-}
-
-function bindPageDragging(grid) {
-  $$(".drag-handle", grid).forEach(handle => {
-    handle.addEventListener("dragstart", event => {
-      const card = handle.closest(".page-card");
-      app.draggedPageId = card.dataset.pageId;
-      card.classList.add("dragging");
-      event.dataTransfer.effectAllowed = "move";
-      event.dataTransfer.setData("text/plain", app.draggedPageId);
-    });
-    handle.addEventListener("dragend", () => {
-      $$(".page-card", grid).forEach(card => card.classList.remove("dragging", "drag-over"));
-      app.draggedPageId = null;
-    });
-  });
-  grid.addEventListener("dragover", event => {
-    event.preventDefault();
-    const dragged = grid.querySelector(`[data-page-id="${CSS.escape(app.draggedPageId || "")}"]`);
-    const target = event.target.closest(".page-card");
-    if (!dragged || !target || target === dragged) return;
-    $$(".page-card", grid).forEach(card => card.classList.remove("drag-over"));
-    target.classList.add("drag-over");
-    const box = target.getBoundingClientRect();
-    target.parentNode.insertBefore(dragged, event.clientY < box.top + box.height / 2 ? target : target.nextSibling);
-  });
-  grid.addEventListener("drop", async event => {
-    event.preventDefault();
-    const pageIds = $$(".page-card", grid).map(card => card.dataset.pageId);
-    $$(".page-card", grid).forEach(card => card.classList.remove("dragging", "drag-over"));
-    app.draggedPageId = null;
-    try {
-      const result = await api("/api/pages/reorder", { method: "POST", body: JSON.stringify({ page_ids: pageIds }) });
-      app.state = result.state;
-      toast("Порядок збережено");
-    } catch (error) {
-      toast("Не вдалося зберегти порядок", error.message, "error");
-      await loadState({ silent: true });
-    }
-  });
+    toast("Не вдалося оновити фанку", error.message, "error");
+    await loadState({ silent: true });
+  } finally { saveButton.disabled = false; }
 }
 
 function parseWhitelist(textValue) {
@@ -260,6 +263,10 @@ function statusPresentation(comment) {
   return ["Видимий", "visible"];
 }
 
+function facebookAuthorUrl(comment) {
+  return comment.author_id ? `https://www.facebook.com/${encodeURIComponent(comment.author_id)}` : "";
+}
+
 function renderComments() {
   const body = $("#commentsTable");
   const empty = $("#commentsEmpty");
@@ -268,13 +275,14 @@ function renderComments() {
     const date = formatDate(comment.received_at);
     const [label, kind] = statusPresentation(comment);
     const canToggle = !["queued", "hiding", "unhiding"].includes(comment.status);
+    const authorUrl = facebookAuthorUrl(comment);
     return `<tr>
       <td class="time-cell">${date.day}<small>${date.time}</small></td>
       <td><div class="table-page">
         ${comment.picture_url ? `<img src="${escapeHtml(comment.picture_url)}" alt="">` : `<span class="avatar-fallback">${escapeHtml(initials(comment.page_name))}</span>`}
         <span>${escapeHtml(comment.page_name)}</span>
       </div></td>
-      <td><div class="comment-copy"><b>${escapeHtml(comment.author_name || "Невідомий автор")}</b><p title="${escapeHtml(comment.message)}">${escapeHtml(comment.message || "Без тексту")}</p>${comment.error ? `<p class="comment-error">${escapeHtml(comment.error)}</p>` : ""}</div></td>
+      <td><div class="comment-copy">${authorUrl ? `<a class="comment-author-link" href="${escapeHtml(authorUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(comment.author_name || "Відкрити автора")} <span>↗</span></a>` : `<b>${escapeHtml(comment.author_name || "Невідомий автор")}</b>`}<p title="${escapeHtml(comment.message)}">${escapeHtml(comment.message || "Без тексту")}</p>${comment.error ? `<p class="comment-error">${escapeHtml(comment.error)}</p>` : ""}</div></td>
       <td><span class="status-badge status-${kind}">${label}</span></td>
       <td>${canToggle ? `<button class="row-action" data-comment-id="${escapeHtml(comment.id)}" data-hidden="${comment.is_hidden ? "true" : "false"}">${comment.is_hidden ? "Показати" : "Сховати"}</button>` : ""}</td>
     </tr>`;
