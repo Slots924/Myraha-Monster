@@ -1,0 +1,23 @@
+# Автоматично стартує після завантаження сервера та доступності мережі.
+[Unit]
+Description=Myraha Monster Facebook moderation dashboard
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# Застосунок працює не від root, а від звичайного користувача VM.
+User=evheniy_zakharow
+Group=evheniy_zakharow
+WorkingDirectory=/home/evheniy_zakharow/myraha-monster
+
+# index.py сам завантажує секрети з .env у робочій папці.
+ExecStart=/usr/bin/python3 /home/evheniy_zakharow/myraha-monster/index.py
+
+# Перезапускати застосунок, якщо він завершився з помилкою.
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+# Увімкнути старт разом зі звичайним завантаженням Linux.
+WantedBy=multi-user.target
